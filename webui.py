@@ -22,6 +22,12 @@ from modules.private_logger import get_current_html_path
 from modules.ui_gradio_extensions import reload_javascript
 from modules.auth import auth_enabled, check_auth
 
+from efficient_sam.build_efficient_sam import build_efficient_sam_vitt, build_efficient_sam_vits
+from torchvision import transforms
+import numpy as np
+import torch
+global esam_model
+esam_model = None
 
 def generate_clicked(*args):
     import ldm_patched.modules.model_management as model_management
@@ -187,13 +193,73 @@ with shared.gradio_root:
                                            queue=False, show_progress=False)
                     with gr.TabItem(label='Inpaint or Outpaint') as inpaint_tab:
                         inpaint_input_image = grh.Image(label='Drag above image to here', source='upload', type='numpy', tool='sketch', height=500, brush_color="#FFFFFF", elem_id='inpaint_canvas')
+                        inpaint_input_mask_vis = grh.Image(label='Mask', source='upload', type='numpy', tool=None, height=500, brush_color="#FFFFFF", elem_id='inpaint_canvas_mask_vis', visible=True, interactive=False)
+                        inpaint_input_mask = grh.Image(label='MaskValue', source='upload', image_mode='L', type='numpy', tool=None, height=500, brush_color="#FFFFFF", elem_id='inpaint_canvas_mask', visible=False, interactive=False)
                         with gr.Row():
+                            with gr.Column():
+                                sam_segment = gr.Button("SAM-Mask", elem_id='inpaint_sam_segment_button', visible=True)
+                                with gr.Row(scale=1):
+                                    copy_segment = gr.Button("Copy-Mask", elem_id='inpaint_copy_segment_button', visible=True, scale=0)
+                                    clear_segment = gr.Button("Clear-Mask", elem_id='inpaint_clear_segment_button', visible=True, scale=0)
                             inpaint_additional_prompt = gr.Textbox(placeholder="Describe what you want to inpaint.", elem_id='inpaint_additional_prompt', label='Inpaint Additional Prompt', visible=False)
                             outpaint_selections = gr.CheckboxGroup(choices=['Left', 'Right', 'Top', 'Bottom'], value=[], label='Outpaint Direction')
                             inpaint_mode = gr.Dropdown(choices=modules.flags.inpaint_options, value=modules.flags.inpaint_option_default, label='Method')
                         example_inpaint_prompts = gr.Dataset(samples=modules.config.example_inpaint_prompts, label='Additional Prompt Quick List', components=[inpaint_additional_prompt], visible=False)
+                        def sam_mask_button_clicked(inp, cur_mask):
+                            if inp is None: return None, None
+                            global esam_model
+                            if esam_model is None:
+                                gr.Info('loading SAM model')
+                                esam_model = build_efficient_sam_vitt("efficient_sam/weights/efficient_sam_vitt.pt")
+                            image = inp['image']
+                            mask = inp['mask']
+                            if mask.sum() == 0:
+                                gr.Warning('SAM needs initial mask as prompt')
+                                return None, None
+                            with torch.no_grad():
+                                sample_image_tensor = transforms.ToTensor()(image)
+                                sel = np.where(mask[:,:,0] > 0)
+                                sel = np.array([sel[1],sel[0]]).T
+                                sampled_indices = np.random.choice(np.arange(sel.shape[0]), size=min(128,sel.shape[0]), replace=False)
+                                sel = sel[sampled_indices,:]
+                                input_points = torch.reshape(torch.tensor(sel), [1, 1, -1, 2])
+                                input_labels = torch.reshape(torch.tensor([1]*sel.shape[0]), [1, 1, -1])
+                                predicted_logits, predicted_iou = esam_model(sample_image_tensor[None, ...], input_points, input_labels,)
+                                predicted_logits = predicted_logits[0, 0]
+                                predicted_iou = predicted_iou[0, 0]
+                                masks = [torch.ge(predicted_logits[idx, :, :], 0).cpu().detach().numpy().astype(np.uint8) for idx in range(len(predicted_iou))]
+                                gen_mask = masks[np.argmax(predicted_iou)]
+                            if cur_mask is not None:
+                                gen_mask = (cur_mask | (gen_mask>0)).astype(np.uint8)
+                            rgba_mask = (255*(1-gen_mask*0.3)).astype(np.uint8)[:,:,None]
+                            combined = np.concatenate([image, rgba_mask], axis=2)
+                            return combined, gen_mask
+                        def copy_mask_button_clicked(inp, cur_mask):
+                            if inp is None: return None, None
+                            image = inp['image']
+                            mask = inp['mask'][:,:,0]
+                            if cur_mask is None:
+                                cur_mask = (mask > 0)
+                            gen_mask = (cur_mask | (mask > 0)).astype(np.uint8)
+                            rgba_mask = (255*(1-gen_mask*0.3)).astype(np.uint8)[:,:,None]
+                            combined = np.concatenate([image, rgba_mask], axis=2)
+                            return combined, gen_mask
+                        def clear_mask_button_clicked(inp, cur_mask):
+                            if inp is not None:
+                                image = inp['image']
+                                gen_mask = np.zeros_like(image)[:,:,0]
+                                gen_mask.fill(0)
+                                combined = image
+                            else:
+                                gen_mask = None
+                                combined = None
+                            return combined, gen_mask
+                        sam_segment.click(fn=sam_mask_button_clicked, inputs=[inpaint_input_image, inpaint_input_mask], outputs=[inpaint_input_mask_vis, inpaint_input_mask])
+                        copy_segment.click(fn=copy_mask_button_clicked, inputs=[inpaint_input_image, inpaint_input_mask], outputs=[inpaint_input_mask_vis, inpaint_input_mask])
+                        clear_segment.click(fn=clear_mask_button_clicked, inputs=[inpaint_input_image, inpaint_input_mask], outputs=[inpaint_input_mask_vis, inpaint_input_mask])
                         gr.HTML('* Powered by Fooocus Inpaint Engine <a href="https://github.com/lllyasviel/Fooocus/discussions/414" target="_blank">\U0001F4D4 Document</a>')
                         example_inpaint_prompts.click(lambda x: x[0], inputs=example_inpaint_prompts, outputs=inpaint_additional_prompt, show_progress=False, queue=False)
+
                     with gr.TabItem(label='Describe') as desc_tab:
                         with gr.Row():
                             with gr.Column():
