@@ -576,7 +576,7 @@ with shared.gradio_root:
         ctrls += [base_model, refiner_model, refiner_switch] + lora_ctrls
         ctrls += [input_image_checkbox, current_tab]
         ctrls += [uov_method, uov_input_image]
-        ctrls += [outpaint_selections, inpaint_input_image, inpaint_additional_prompt]
+        ctrls += [outpaint_selections, inpaint_input_image, inpaint_input_mask, inpaint_additional_prompt]
         ctrls += ip_ctrls
 
         state_is_generating = gr.State(False)
