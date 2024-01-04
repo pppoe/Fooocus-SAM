@@ -26,8 +26,30 @@ from efficient_sam.build_efficient_sam import build_efficient_sam_vitt, build_ef
 from torchvision import transforms
 import numpy as np
 import torch
+import PIL
 global esam_model
 esam_model = None
+def sample_prompt_pts(mask, h_resol=128, w_resol=128, max_pts=128, K = 20):
+    h_step = max(mask.shape[0] // h_resol, 1)
+    w_step = max(mask.shape[1] // w_resol, 1)
+    valid_pts = []
+    for i in range(0, mask.shape[0], h_step):
+        for j in range(0, mask.shape[1], w_step):
+            if mask[i][j]: valid_pts.append((i, j))
+    if len(valid_pts) > max_pts:
+        valid_pts = np.array(valid_pts).reshape(-1, 2)
+        keep = set([np.random.randint(0, len(valid_pts))])
+        while len(keep) < max_pts:
+            sel = []
+            while len(sel) < K:
+                i = np.random.randint(0, len(valid_pts))
+                if i in keep: continue
+                sel.append(i)
+            sel_dists = np.linalg.norm(valid_pts[np.array(sel),None,:] - valid_pts[None,np.array(list(keep)),:],axis=2).min(axis=1)
+            j = sel[np.argmax(sel_dists)]
+            keep.add(j)
+        valid_pts = valid_pts[list(keep),:]
+    return valid_pts[:,[1,0]]
 
 def generate_clicked(*args):
     import ldm_patched.modules.model_management as model_management
@@ -193,19 +215,19 @@ with shared.gradio_root:
                                            queue=False, show_progress=False)
                     with gr.TabItem(label='Inpaint or Outpaint') as inpaint_tab:
                         inpaint_input_image = grh.Image(label='Drag above image to here', source='upload', type='numpy', tool='sketch', height=500, brush_color="#FFFFFF", elem_id='inpaint_canvas')
-                        inpaint_input_mask_vis = grh.Image(label='Mask', source='upload', type='numpy', tool=None, height=500, brush_color="#FFFFFF", elem_id='inpaint_canvas_mask_vis', visible=True, interactive=False)
-                        inpaint_input_mask = grh.Image(label='MaskValue', source='upload', image_mode='L', type='numpy', tool=None, height=500, brush_color="#FFFFFF", elem_id='inpaint_canvas_mask', visible=False, interactive=False)
+                        inpaint_input_mask_vis = grh.Image(label='Mask Overlayed', source='upload', type='numpy', tool=None, height=500, brush_color="#FFFFFF", elem_id='inpaint_canvas_mask_vis', visible=True, interactive=False)
+                        inpaint_input_mask = grh.Image(label='Mask (selection in white)', source='upload', image_mode='L', type='numpy', tool=None, height=500, brush_color="#FFFFFF", elem_id='inpaint_canvas_mask', visible=False, interactive=False)
                         with gr.Row():
-                            with gr.Column():
+                            with gr.Column(scale=1):
                                 sam_segment = gr.Button("SAM-Mask", elem_id='inpaint_sam_segment_button', visible=True)
-                                with gr.Row(scale=1):
-                                    copy_segment = gr.Button("Copy-Mask", elem_id='inpaint_copy_segment_button', visible=True, scale=0)
-                                    clear_segment = gr.Button("Clear-Mask", elem_id='inpaint_clear_segment_button', visible=True, scale=0)
-                            inpaint_additional_prompt = gr.Textbox(placeholder="Describe what you want to inpaint.", elem_id='inpaint_additional_prompt', label='Inpaint Additional Prompt', visible=False)
-                            outpaint_selections = gr.CheckboxGroup(choices=['Left', 'Right', 'Top', 'Bottom'], value=[], label='Outpaint Direction')
+                                clear_segment = gr.Button("Clear-Mask", elem_id='inpaint_clear_segment_button', visible=True)
+                                invert_segment = gr.Button("Invert-Mask", elem_id='inpaint_invert_segment_button', visible=True)
+                                upload_segment = gr.UploadButton("Upload Mask (selection in non-black)", elem_id='inpaint_upload_segment_button', visible=True, file_count="single", file_types=["image"])
+                            inpaint_additional_prompt = gr.Textbox(placeholder="Describe what you want to inpaint.", elem_id='inpaint_additional_prompt', label='Inpaint Additional Prompt', visible=False, scale=2)
+                            outpaint_selections = gr.CheckboxGroup(choices=['Left', 'Right', 'Top', 'Bottom'], value=[], label='Outpaint Direction', scale=2)
                             inpaint_mode = gr.Dropdown(choices=modules.flags.inpaint_options, value=modules.flags.inpaint_option_default, label='Method')
                         example_inpaint_prompts = gr.Dataset(samples=modules.config.example_inpaint_prompts, label='Additional Prompt Quick List', components=[inpaint_additional_prompt], visible=False)
-                        def sam_mask_button_clicked(inp, cur_mask):
+                        def sam_mask_button_clicked(inp):
                             if inp is None: return None, None
                             global esam_model
                             if esam_model is None:
@@ -218,31 +240,27 @@ with shared.gradio_root:
                                 return None, None
                             with torch.no_grad():
                                 sample_image_tensor = transforms.ToTensor()(image)
-                                sel = np.where(mask[:,:,0] > 0)
-                                sel = np.array([sel[1],sel[0]]).T
-                                sampled_indices = np.random.choice(np.arange(sel.shape[0]), size=min(128,sel.shape[0]), replace=False)
-                                sel = sel[sampled_indices,:]
-                                input_points = torch.reshape(torch.tensor(sel), [1, 1, -1, 2])
-                                input_labels = torch.reshape(torch.tensor([1]*sel.shape[0]), [1, 1, -1])
+                                mask = (mask[:,:,0] > 0)
+                                pts = sample_prompt_pts(mask)
+                                input_points = torch.reshape(torch.tensor(pts), [1, 1, -1, 2])
+                                input_labels = torch.reshape(torch.tensor([1]*pts.shape[0]), [1, 1, -1])
                                 predicted_logits, predicted_iou = esam_model(sample_image_tensor[None, ...], input_points, input_labels,)
                                 predicted_logits = predicted_logits[0, 0]
                                 predicted_iou = predicted_iou[0, 0]
                                 masks = [torch.ge(predicted_logits[idx, :, :], 0).cpu().detach().numpy().astype(np.uint8) for idx in range(len(predicted_iou))]
                                 gen_mask = masks[np.argmax(predicted_iou)]
-                            if cur_mask is not None:
-                                gen_mask = (cur_mask | (gen_mask>0)).astype(np.uint8)
                             rgba_mask = (255*(1-gen_mask*0.3)).astype(np.uint8)[:,:,None]
                             combined = np.concatenate([image, rgba_mask], axis=2)
                             return combined, gen_mask
-                        def copy_mask_button_clicked(inp, cur_mask):
-                            if inp is None: return None, None
-                            image = inp['image']
-                            mask = inp['mask'][:,:,0]
-                            if cur_mask is None:
-                                cur_mask = (mask > 0)
-                            gen_mask = (cur_mask | (mask > 0)).astype(np.uint8)
-                            rgba_mask = (255*(1-gen_mask*0.3)).astype(np.uint8)[:,:,None]
-                            combined = np.concatenate([image, rgba_mask], axis=2)
+                        def invert_mask_button_clicked(inp, cur_mask):
+                            if inp is not None:
+                                image = inp['image']
+                                gen_mask = (1-cur_mask/255.).astype(np.uint8)
+                                rgba_mask = (255*(1-gen_mask*0.3)).astype(np.uint8)[:,:,None]
+                                combined = np.concatenate([image, rgba_mask], axis=2)
+                            else:
+                                gen_mask = None
+                                combined = None
                             return combined, gen_mask
                         def clear_mask_button_clicked(inp, cur_mask):
                             if inp is not None:
@@ -254,9 +272,30 @@ with shared.gradio_root:
                                 gen_mask = None
                                 combined = None
                             return combined, gen_mask
-                        sam_segment.click(fn=sam_mask_button_clicked, inputs=[inpaint_input_image, inpaint_input_mask], outputs=[inpaint_input_mask_vis, inpaint_input_mask])
-                        copy_segment.click(fn=copy_mask_button_clicked, inputs=[inpaint_input_image, inpaint_input_mask], outputs=[inpaint_input_mask_vis, inpaint_input_mask])
+
+                        def upload_mask_button_clicked(upload_file, inp):
+                            if upload_file is None:
+                                return None, None
+                            if inp is None:
+                                gr.Info('Missing input image')
+                                return None, None
+                            image = inp['image']
+                            cur_mask = PIL.Image.open(upload_file.name)
+                            if cur_mask.mode == 'RGBA':
+                                cur_mask = cur_mask.getchannel('A').convert('L')
+                            else:
+                                cur_mask = cur_mask.convert('L')
+                            cur_mask = transforms.Resize(image.shape[:2],antialias=True)(transforms.ToTensor()(cur_mask)).numpy()[0]
+                            cur_mask = (cur_mask > 0)
+                            gen_mask = cur_mask.astype(np.uint8)
+                            rgba_mask = (255*(1-gen_mask*0.3)).astype(np.uint8)[:,:,None]
+                            combined = np.concatenate([image, rgba_mask], axis=2)
+                            return combined, gen_mask*255
+                        sam_segment.click(fn=sam_mask_button_clicked, inputs=[inpaint_input_image], outputs=[inpaint_input_mask_vis, inpaint_input_mask])
                         clear_segment.click(fn=clear_mask_button_clicked, inputs=[inpaint_input_image, inpaint_input_mask], outputs=[inpaint_input_mask_vis, inpaint_input_mask])
+                        invert_segment.click(fn=invert_mask_button_clicked, inputs=[inpaint_input_image, inpaint_input_mask], outputs=[inpaint_input_mask_vis, inpaint_input_mask])
+                        upload_segment.upload(fn=upload_mask_button_clicked, inputs=[upload_segment, inpaint_input_image], outputs=[inpaint_input_mask_vis, inpaint_input_mask])
+
                         gr.HTML('* Powered by Fooocus Inpaint Engine <a href="https://github.com/lllyasviel/Fooocus/discussions/414" target="_blank">\U0001F4D4 Document</a>')
                         example_inpaint_prompts.click(lambda x: x[0], inputs=example_inpaint_prompts, outputs=inpaint_additional_prompt, show_progress=False, queue=False)
 
