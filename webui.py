@@ -29,7 +29,7 @@ import torch
 import PIL
 global esam_model
 esam_model = None
-def sample_prompt_pts(mask, h_resol=128, w_resol=128, max_pts=128, K = 20):
+def sample_prompt_pts(mask, h_resol=128, w_resol=128, max_pts=512, K = 128):
     h_step = max(mask.shape[0] // h_resol, 1)
     w_step = max(mask.shape[1] // w_resol, 1)
     valid_pts = []
@@ -49,6 +49,8 @@ def sample_prompt_pts(mask, h_resol=128, w_resol=128, max_pts=128, K = 20):
             j = sel[np.argmax(sel_dists)]
             keep.add(j)
         valid_pts = valid_pts[list(keep),:]
+    else:
+        valid_pts = np.array(valid_pts).reshape(-1, 2)
     return valid_pts[:,[1,0]]
 
 def generate_clicked(*args):
@@ -232,7 +234,7 @@ with shared.gradio_root:
                             global esam_model
                             if esam_model is None:
                                 gr.Info('loading SAM model')
-                                esam_model = build_efficient_sam_vitt("efficient_sam/weights/efficient_sam_vitt.pt")
+                                esam_model = build_efficient_sam_vits("efficient_sam/weights/efficient_sam_vits.pt")
                             image = inp['image']
                             mask = inp['mask']
                             if mask.sum() == 0:
