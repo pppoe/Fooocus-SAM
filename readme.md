@@ -8,4 +8,9 @@ Added SAM to FOOOCUS for to automatically generate masks for Inpainting - See Po
 
 [https://blog.haoxiang.org/2024/01/added-sam-to-fooocus/](https://blog.haoxiang.org/2024/01/added-sam-to-fooocus/)
 
-[FOOOCUS README file](./readme.md)
+
+
+## HOW TO INSTALL
+- python3.10 tested
+- generally follow [FOOOCUS README file](./readme.md) to setup environment
+- ``python3 launch.py``
