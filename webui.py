@@ -234,7 +234,7 @@ with shared.gradio_root:
                             global esam_model
                             if esam_model is None:
                                 gr.Info('loading SAM model')
-                                esam_model = build_efficient_sam_vits("efficient_sam/weights/efficient_sam_vits.pt")
+                                esam_model = build_efficient_sam_vitt("efficient_sam/weights/efficient_sam_vitt.pt")
                             image = inp['image']
                             mask = inp['mask']
                             if mask.sum() == 0:
